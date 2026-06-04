@@ -14,6 +14,7 @@ Asistente Bash para montar un servidor de Minecraft en un VPS Ubuntu/Debian.
 - Puede abrir el puerto en UFW.
 - Puede descargar mods/plugins desde una lista de enlaces.
 - Detecta instancias existentes en `/opt/minecraft` y permite cambiar modo de juego, dificultad, PvP, whitelist, puerto, MOTD, RAM, mobs, vuelo y mas.
+- Permite crear una instancia Forge/NeoForge sin pegar el jar en ese momento, para instalarlo despues.
 - Permite arrancar, parar, reiniciar, revisar estado y ver logs del servicio.
 
 ## Uso rapido
@@ -50,6 +51,7 @@ Desde el menu de edicion puedes cambiar:
 - MOTD, jugadores maximos, puerto, view distance y simulation distance.
 - Whitelist, vuelo, animales y monstruos.
 - RAM usada por `start.sh`.
+- Instalar o reemplazar `server.jar` despues de crear la instancia.
 - Mods/plugins desde un archivo de enlaces.
 - Servicio `systemd`: start, stop, restart, status y logs.
 

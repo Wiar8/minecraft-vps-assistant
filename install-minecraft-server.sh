@@ -250,8 +250,11 @@ download_manual_loader() {
   local output="$2"
   local url
   warn "$loader cambia sus instaladores con frecuencia. Usare un enlace directo que pegues tu."
-  url="$(ask "Pega la URL directa del instalador/jar de ${loader}")"
-  [[ -n "$url" ]] || die "URL vacia."
+  url="$(ask "Pega la URL directa del instalador/jar de ${loader}, o deja vacio para hacerlo despues")"
+  if [[ -z "$url" ]]; then
+    warn "No se descargo server.jar. La instancia quedara preparada, pero no arrancara hasta instalar el jar."
+    return 0
+  fi
   curl -fL "$url" -o "$output"
 }
 
@@ -294,6 +297,10 @@ write_start_script() {
 #!/usr/bin/env bash
 set -euo pipefail
 cd "\$(dirname "\$0")"
+if [[ ! -f server.jar ]]; then
+  echo "No existe server.jar en \$(pwd). Instala el jar del servidor desde el asistente antes de arrancar."
+  exit 1
+fi
 exec java -Xms${min_ram} -Xmx${max_ram} -jar server.jar nogui
 EOF
   chmod +x "${server_dir}/start.sh"
@@ -751,6 +758,36 @@ manage_mods_existing() {
   fi
 }
 
+install_server_jar_existing() {
+  local server_dir="$1"
+  local loader mc_version
+
+  loader="$(ask_choice "Tipo de server.jar a instalar/reemplazar" "paper" "vanilla" "fabric" "forge" "neoforge")"
+  mc_version="$(ask "Version de Minecraft, o latest" "latest")"
+  mc_version="$(resolve_mc_version "$loader" "$mc_version")"
+  info "Version de Minecraft resuelta: ${mc_version}"
+
+  if [[ -f "${server_dir}/server.jar" ]]; then
+    cp "${server_dir}/server.jar" "${server_dir}/server.jar.backup.$(date +%Y%m%d-%H%M%S)"
+    info "Backup creado del server.jar actual."
+  fi
+
+  case "$loader" in
+    paper) download_paper "$mc_version" "${server_dir}/server.jar" ;;
+    vanilla) download_vanilla "$mc_version" "${server_dir}/server.jar" ;;
+    fabric) download_fabric "$mc_version" "${server_dir}/server.jar" ;;
+    forge) download_manual_loader "Forge" "${server_dir}/server.jar" ;;
+    neoforge) download_manual_loader "NeoForge" "${server_dir}/server.jar" ;;
+    *) die "Loader no soportado: $loader" ;;
+  esac
+
+  if [[ -f "${server_dir}/server.jar" ]]; then
+    log "server.jar instalado en ${server_dir}/server.jar."
+  else
+    warn "Aun no hay server.jar. La instancia queda preparada pero no puede arrancar todavia."
+  fi
+}
+
 manage_service() {
   local service_name="$1"
   local action
@@ -777,6 +814,7 @@ manage_instance() {
       "motd/jugadores/puerto/distancias" \
       "whitelist/vuelo/mobs" \
       "ram" \
+      "instalar/reemplazar server.jar" \
       "instalar mods/plugins" \
       "servicio start/stop/restart/logs" \
       "salir")"
@@ -786,6 +824,7 @@ manage_instance() {
       "motd/jugadores/puerto/distancias") edit_limits_and_network "$server_dir" ;;
       "whitelist/vuelo/mobs") edit_access_properties "$server_dir" ;;
       "ram") edit_ram "$server_dir" ;;
+      "instalar/reemplazar server.jar") install_server_jar_existing "$server_dir" ;;
       "instalar mods/plugins") manage_mods_existing "$server_dir" ;;
       "servicio start/stop/restart/logs") manage_service "$service_name" ;;
       "salir") return ;;
@@ -882,7 +921,10 @@ install_server() {
     install_firewall_rule "$port"
   fi
 
-  if ask_yes_no "Arrancar el servidor ahora" "n"; then
+  if [[ ! -f "${server_dir}/server.jar" ]]; then
+    warn "No se arrancara ahora porque falta ${server_dir}/server.jar."
+    warn "Luego usa: editar instancia existente -> instalar/reemplazar server.jar."
+  elif ask_yes_no "Arrancar el servidor ahora" "n"; then
     systemctl start "$service_name"
   fi
 
