@@ -11,14 +11,14 @@ if [[ "${TRACE:-0}" == "1" ]]; then
   set -x
 fi
 
-RESET='\033[0m'
-BOLD='\033[1m'
-DIM='\033[2m'
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
+RESET=$'\033[0m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+BLUE=$'\033[0;34m'
+CYAN=$'\033[0;36m'
 
 log() { printf "${GREEN}==>${RESET} %s\n" "$*"; }
 info() { printf "${BLUE} •${RESET} %s\n" "$*"; }
@@ -248,14 +248,33 @@ download_fabric() {
 download_manual_loader() {
   local loader="$1"
   local output="$2"
-  local url
+  local url server_dir installer_name installer_path
+  server_dir="$(dirname "$output")"
+  installer_name="$(tr '[:upper:]' '[:lower:]' <<<"$loader")-installer.jar"
+  installer_path="${server_dir}/${installer_name}"
+
   warn "$loader cambia sus instaladores con frecuencia. Usare un enlace directo que pegues tu."
-  url="$(ask "Pega la URL directa del instalador/jar de ${loader}, o deja vacio para hacerlo despues")"
+  url="$(ask "Pega la URL directa del instalador de ${loader}, o deja vacio para hacerlo despues")"
   if [[ -z "$url" ]]; then
-    warn "No se descargo server.jar. La instancia quedara preparada, pero no arrancara hasta instalar el jar."
+    warn "No se instalo ${loader}. La instancia quedara preparada, pero no arrancara hasta instalar el loader."
     return 0
   fi
-  curl -fL "$url" -o "$output"
+
+  curl -fL "$url" -o "$installer_path"
+  log "Ejecutando instalador de ${loader} en modo servidor"
+  (cd "$server_dir" && java -jar "$installer_path" --installServer)
+
+  if [[ -f "${server_dir}/run.sh" ]]; then
+    chmod +x "${server_dir}/run.sh"
+  fi
+
+  if [[ -f "$output" ]]; then
+    info "server.jar existe en ${server_dir}."
+  elif [[ -f "${server_dir}/run.sh" ]]; then
+    info "${loader} genero run.sh; start.sh lo usara al arrancar."
+  else
+    warn "El instalador termino, pero no encontre server.jar ni run.sh. Revisa ${server_dir}."
+  fi
 }
 
 write_eula_and_properties() {
@@ -297,11 +316,14 @@ write_start_script() {
 #!/usr/bin/env bash
 set -euo pipefail
 cd "\$(dirname "\$0")"
-if [[ ! -f server.jar ]]; then
-  echo "No existe server.jar en \$(pwd). Instala el jar del servidor desde el asistente antes de arrancar."
-  exit 1
+if [[ -x ./run.sh ]]; then
+  exec ./run.sh nogui
 fi
-exec java -Xms${min_ram} -Xmx${max_ram} -jar server.jar nogui
+if [[ -f ./server.jar ]]; then
+  exec java -Xms${min_ram} -Xmx${max_ram} -jar server.jar nogui
+fi
+echo "No existe server.jar ni run.sh en \$(pwd). Instala el servidor desde el asistente antes de arrancar."
+  exit 1
 EOF
   chmod +x "${server_dir}/start.sh"
 }
@@ -781,10 +803,10 @@ install_server_jar_existing() {
     *) die "Loader no soportado: $loader" ;;
   esac
 
-  if [[ -f "${server_dir}/server.jar" ]]; then
-    log "server.jar instalado en ${server_dir}/server.jar."
+  if [[ -f "${server_dir}/server.jar" || -x "${server_dir}/run.sh" ]]; then
+    log "Servidor instalado en ${server_dir}."
   else
-    warn "Aun no hay server.jar. La instancia queda preparada pero no puede arrancar todavia."
+    warn "Aun no hay server.jar ni run.sh. La instancia queda preparada pero no puede arrancar todavia."
   fi
 }
 
@@ -921,8 +943,8 @@ install_server() {
     install_firewall_rule "$port"
   fi
 
-  if [[ ! -f "${server_dir}/server.jar" ]]; then
-    warn "No se arrancara ahora porque falta ${server_dir}/server.jar."
+  if [[ ! -f "${server_dir}/server.jar" && ! -x "${server_dir}/run.sh" ]]; then
+    warn "No se arrancara ahora porque falta ${server_dir}/server.jar o ${server_dir}/run.sh."
     warn "Luego usa: editar instancia existente -> instalar/reemplazar server.jar."
   elif ask_yes_no "Arrancar el servidor ahora" "n"; then
     systemctl start "$service_name"
