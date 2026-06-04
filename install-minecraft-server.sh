@@ -107,9 +107,9 @@ ask_choice() {
   local choices=("$@")
   local index choice
 
-  printf "%b\n" "${CYAN}?${RESET} ${prompt}"
+  printf "%b\n" "${CYAN}?${RESET} ${prompt}" >&2
   for index in "${!choices[@]}"; do
-    printf "  %s) %s\n" "$((index + 1))" "${choices[$index]}"
+    printf "  %s) %s\n" "$((index + 1))" "${choices[$index]}" >&2
   done
 
   while true; do
