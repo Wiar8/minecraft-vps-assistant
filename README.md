@@ -4,6 +4,7 @@ Asistente Bash para montar un servidor de Minecraft en un VPS Ubuntu/Debian.
 
 ## Que hace
 
+- Muestra un menu principal para instalar un servidor nuevo o editar uno existente.
 - Instala Java y herramientas necesarias con `apt`.
 - Crea un usuario Linux dedicado para el servidor.
 - Descarga `server.jar` para Vanilla, Paper o Fabric.
@@ -12,6 +13,8 @@ Asistente Bash para montar un servidor de Minecraft en un VPS Ubuntu/Debian.
 - Permite elegir modo premium (`online-mode=true`) o no premium (`online-mode=false`).
 - Puede abrir el puerto en UFW.
 - Puede descargar mods/plugins desde una lista de enlaces.
+- Detecta instancias existentes en `/opt/minecraft` y permite cambiar modo de juego, dificultad, PvP, whitelist, puerto, MOTD, RAM, mobs, vuelo y mas.
+- Permite arrancar, parar, reiniciar, revisar estado y ver logs del servicio.
 
 ## Uso rapido
 
@@ -21,6 +24,36 @@ En el VPS:
 chmod +x install-minecraft-server.sh
 sudo ./install-minecraft-server.sh
 ```
+
+El asistente te preguntara si quieres:
+
+```txt
+1) instalar nuevo servidor
+2) editar instancia existente
+3) salir
+```
+
+## Editar instancias existentes
+
+El asistente busca servidores en:
+
+```txt
+/opt/minecraft/<nombre-del-servidor>/server.properties
+```
+
+Desde el menu de edicion puedes cambiar:
+
+- Modo de juego: survival, creative, adventure o spectator.
+- Dificultad.
+- Premium/no premium (`online-mode`).
+- PvP y command blocks.
+- MOTD, jugadores maximos, puerto, view distance y simulation distance.
+- Whitelist, vuelo, animales y monstruos.
+- RAM usada por `start.sh`.
+- Mods/plugins desde un archivo de enlaces.
+- Servicio `systemd`: start, stop, restart, status y logs.
+
+Cuando cambias propiedades, el script crea un backup de `server.properties` antes de tocarlo.
 
 ## Mods y plugins
 

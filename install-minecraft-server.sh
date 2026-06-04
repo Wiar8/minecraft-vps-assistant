@@ -84,6 +84,12 @@ ask_yes_no() {
   local prompt="$1"
   local default="${2:-s}"
   local answer suffix
+
+  case "$default" in
+    true|TRUE|True) default="s" ;;
+    false|FALSE|False) default="n" ;;
+  esac
+
   if [[ "$default" =~ ^[sS]$ ]]; then
     suffix="S/n"
   else
@@ -492,7 +498,307 @@ Primer arranque:
 EOF
 }
 
-main() {
+read_property() {
+  local file="$1"
+  local key="$2"
+  local default="${3:-}"
+  local value
+
+  if [[ -f "$file" ]]; then
+    value="$(grep -E "^${key}=" "$file" | tail -n1 | cut -d= -f2- || true)"
+    printf '%s' "${value:-$default}"
+  else
+    printf '%s' "$default"
+  fi
+}
+
+set_property() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp
+
+  [[ -f "$file" ]] || die "No existe ${file}"
+  tmp="$(mktemp)"
+  awk -v key="$key" -v value="$value" '
+    index($0, key "=") == 1 {
+      print key "=" value
+      found = 1
+      next
+    }
+    { print }
+    END {
+      if (!found) {
+        print key "=" value
+      }
+    }
+  ' "$file" > "$tmp"
+  mv "$tmp" "$file"
+}
+
+backup_properties() {
+  local server_dir="$1"
+  local properties="${server_dir}/server.properties"
+  local backup="${server_dir}/server.properties.backup.$(date +%Y%m%d-%H%M%S)"
+
+  [[ -f "$properties" ]] || die "No existe ${properties}"
+  cp "$properties" "$backup"
+  info "Backup creado: ${backup}"
+}
+
+service_for_instance() {
+  local server_dir="$1"
+  local instance
+  instance="$(basename "$server_dir")"
+
+  if [[ -f "/etc/systemd/system/minecraft-${instance}.service" ]]; then
+    printf 'minecraft-%s' "$instance"
+  else
+    ask "Nombre del servicio systemd" "minecraft-${instance}"
+  fi
+}
+
+choose_instance() {
+  local instances=()
+  local dir choice index
+
+  [[ -d "$DEFAULT_BASE_DIR" ]] || die "No existe ${DEFAULT_BASE_DIR}. Instala una instancia primero."
+
+  while IFS= read -r dir; do
+    [[ -f "${dir}/server.properties" ]] && instances+=("$dir")
+  done < <(find "$DEFAULT_BASE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+
+  (( ${#instances[@]} > 0 )) || die "No encontre instancias con server.properties en ${DEFAULT_BASE_DIR}."
+
+  printf "%b\n" "${CYAN}?${RESET} Elige una instancia" >&2
+  for index in "${!instances[@]}"; do
+    printf "  %s) %s\n" "$((index + 1))" "${instances[$index]}" >&2
+  done
+
+  while true; do
+    read -r -p "Selecciona una opcion: " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#instances[@]} )); then
+      printf '%s' "${instances[$((choice - 1))]}"
+      return
+    fi
+    warn "Opcion invalida."
+  done
+}
+
+show_instance_summary() {
+  local server_dir="$1"
+  local service_name="$2"
+  local properties="${server_dir}/server.properties"
+
+  printf "\n${BOLD}Instancia:${RESET} %s\n" "$server_dir"
+  printf "${BOLD}Servicio:${RESET}  %s\n" "$service_name"
+  printf "gamemode=%s\n" "$(read_property "$properties" "gamemode" "survival")"
+  printf "difficulty=%s\n" "$(read_property "$properties" "difficulty" "normal")"
+  printf "online-mode=%s\n" "$(read_property "$properties" "online-mode" "true")"
+  printf "pvp=%s\n" "$(read_property "$properties" "pvp" "true")"
+  printf "white-list=%s\n" "$(read_property "$properties" "white-list" "false")"
+  printf "max-players=%s\n" "$(read_property "$properties" "max-players" "20")"
+  printf "server-port=%s\n\n" "$(read_property "$properties" "server-port" "25565")"
+
+  if systemctl list-unit-files "${service_name}.service" >/dev/null 2>&1; then
+    systemctl is-active --quiet "$service_name" && info "Estado: activo" || warn "Estado: detenido o fallando"
+  else
+    warn "No encontre el servicio ${service_name}.service en systemd."
+  fi
+}
+
+edit_basic_properties() {
+  local server_dir="$1"
+  local properties="${server_dir}/server.properties"
+  local value
+
+  backup_properties "$server_dir"
+
+  value="$(ask_choice "Modo de juego por defecto" "survival" "creative" "adventure" "spectator")"
+  set_property "$properties" "gamemode" "$value"
+
+  if ask_yes_no "Forzar ese modo al entrar los jugadores" "n"; then
+    set_property "$properties" "force-gamemode" "true"
+  else
+    set_property "$properties" "force-gamemode" "false"
+  fi
+
+  value="$(ask_choice "Dificultad" "normal" "easy" "hard" "peaceful")"
+  set_property "$properties" "difficulty" "$value"
+
+  if ask_yes_no "Activar PvP" "$(read_property "$properties" "pvp" "true")"; then
+    set_property "$properties" "pvp" "true"
+  else
+    set_property "$properties" "pvp" "false"
+  fi
+
+  if ask_yes_no "Activar command blocks" "n"; then
+    set_property "$properties" "enable-command-block" "true"
+  else
+    set_property "$properties" "enable-command-block" "false"
+  fi
+
+  if ask_yes_no "Servidor premium / cuentas oficiales" "$(read_property "$properties" "online-mode" "true")"; then
+    set_property "$properties" "online-mode" "true"
+  else
+    set_property "$properties" "online-mode" "false"
+    warn "online-mode=false reduce la verificacion de identidad. Usa whitelist si es privado."
+  fi
+
+  log "Propiedades actualizadas."
+}
+
+edit_limits_and_network() {
+  local server_dir="$1"
+  local properties="${server_dir}/server.properties"
+  local value
+
+  backup_properties "$server_dir"
+
+  value="$(ask "MOTD" "$(read_property "$properties" "motd" "Minecraft VPS")")"
+  set_property "$properties" "motd" "$value"
+
+  value="$(ask "Maximo de jugadores" "$(read_property "$properties" "max-players" "20")")"
+  [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 )) || die "Maximo de jugadores invalido: $value"
+  set_property "$properties" "max-players" "$value"
+
+  value="$(ask "View distance" "$(read_property "$properties" "view-distance" "10")")"
+  [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 2 && value <= 32 )) || die "View distance invalida: $value"
+  set_property "$properties" "view-distance" "$value"
+
+  value="$(ask "Simulation distance" "$(read_property "$properties" "simulation-distance" "10")")"
+  [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 2 && value <= 32 )) || die "Simulation distance invalida: $value"
+  set_property "$properties" "simulation-distance" "$value"
+
+  value="$(ask "Puerto" "$(read_property "$properties" "server-port" "25565")")"
+  [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 )) || die "Puerto invalido: $value"
+  set_property "$properties" "server-port" "$value"
+
+  log "Limites y red actualizados."
+}
+
+edit_access_properties() {
+  local server_dir="$1"
+  local properties="${server_dir}/server.properties"
+
+  backup_properties "$server_dir"
+
+  if ask_yes_no "Activar whitelist" "$(read_property "$properties" "white-list" "false")"; then
+    set_property "$properties" "white-list" "true"
+    set_property "$properties" "enforce-whitelist" "true"
+  else
+    set_property "$properties" "white-list" "false"
+    set_property "$properties" "enforce-whitelist" "false"
+  fi
+
+  if ask_yes_no "Permitir vuelo" "$(read_property "$properties" "allow-flight" "false")"; then
+    set_property "$properties" "allow-flight" "true"
+  else
+    set_property "$properties" "allow-flight" "false"
+  fi
+
+  if ask_yes_no "Generar animales" "$(read_property "$properties" "spawn-animals" "true")"; then
+    set_property "$properties" "spawn-animals" "true"
+  else
+    set_property "$properties" "spawn-animals" "false"
+  fi
+
+  if ask_yes_no "Generar monstruos" "$(read_property "$properties" "spawn-monsters" "true")"; then
+    set_property "$properties" "spawn-monsters" "true"
+  else
+    set_property "$properties" "spawn-monsters" "false"
+  fi
+
+  log "Acceso y mundo actualizados."
+}
+
+edit_ram() {
+  local server_dir="$1"
+  local start_script="${server_dir}/start.sh"
+  local min_ram max_ram
+
+  [[ -f "$start_script" ]] || die "No existe ${start_script}"
+  cp "$start_script" "${start_script}.backup.$(date +%Y%m%d-%H%M%S)"
+
+  min_ram="$(ask "RAM minima para Java" "1G")"
+  max_ram="$(ask "RAM maxima para Java" "4G")"
+
+  sed -i -E "s/-Xms[^ ]+/-Xms${min_ram}/; s/-Xmx[^ ]+/-Xmx${max_ram}/" "$start_script"
+  chmod +x "$start_script"
+  log "RAM actualizada en ${start_script}."
+}
+
+manage_mods_existing() {
+  local server_dir="$1"
+  local loader target_dir mc_version mods_list
+
+  loader="$(ask_choice "Tipo de mods/plugins a instalar" "fabric" "forge" "neoforge" "paper-plugins")"
+  mc_version="$(ask "Version de Minecraft para buscar mods" "latest")"
+  if [[ "$mc_version" == "latest" ]]; then
+    case "$loader" in
+      fabric) mc_version="$(latest_fabric_game_version)" ;;
+      *) mc_version="$(latest_mojang_release)" ;;
+    esac
+  fi
+
+  mods_list="$(ask "Ruta al archivo .txt con enlaces")"
+  if [[ "$loader" == "paper-plugins" ]]; then
+    target_dir="${server_dir}/plugins"
+    install_mods_from_file "$mods_list" "$mc_version" "bukkit" "$target_dir"
+  else
+    target_dir="${server_dir}/mods"
+    install_mods_from_file "$mods_list" "$mc_version" "$loader" "$target_dir"
+  fi
+}
+
+manage_service() {
+  local service_name="$1"
+  local action
+
+  action="$(ask_choice "Accion del servicio" "start" "stop" "restart" "status" "logs")"
+  case "$action" in
+    start|stop|restart) systemctl "$action" "$service_name" ;;
+    status) systemctl status "$service_name" --no-pager ;;
+    logs) journalctl -u "$service_name" -n 80 --no-pager ;;
+  esac
+}
+
+manage_instance() {
+  local server_dir service_name option
+
+  server_dir="$(choose_instance)"
+  service_name="$(service_for_instance "$server_dir")"
+
+  while true; do
+    banner
+    show_instance_summary "$server_dir" "$service_name"
+    option="$(ask_choice "Que quieres hacer" \
+      "modo/dificultad/premium" \
+      "motd/jugadores/puerto/distancias" \
+      "whitelist/vuelo/mobs" \
+      "ram" \
+      "instalar mods/plugins" \
+      "servicio start/stop/restart/logs" \
+      "salir")"
+
+    case "$option" in
+      "modo/dificultad/premium") edit_basic_properties "$server_dir" ;;
+      "motd/jugadores/puerto/distancias") edit_limits_and_network "$server_dir" ;;
+      "whitelist/vuelo/mobs") edit_access_properties "$server_dir" ;;
+      "ram") edit_ram "$server_dir" ;;
+      "instalar mods/plugins") manage_mods_existing "$server_dir" ;;
+      "servicio start/stop/restart/logs") manage_service "$service_name" ;;
+      "salir") return ;;
+    esac
+
+    if [[ "$option" != "servicio start/stop/restart/logs" ]] && ask_yes_no "Reiniciar ${service_name} para aplicar cambios" "s"; then
+      systemctl restart "$service_name"
+    fi
+    read -r -p "Pulsa Enter para continuar..."
+  done
+}
+
+install_server() {
   banner
   require_root
   detect_os
@@ -582,6 +888,21 @@ main() {
 
   info "Configuracion premium: ${premium}"
   print_summary "$service_name" "$server_dir" "$port"
+}
+
+main() {
+  local option
+
+  banner
+  require_root
+  detect_os
+
+  option="$(ask_choice "Que quieres hacer" "instalar nuevo servidor" "editar instancia existente" "salir")"
+  case "$option" in
+    "instalar nuevo servidor") install_server ;;
+    "editar instancia existente") manage_instance ;;
+    "salir") exit 0 ;;
+  esac
 }
 
 main "$@"
